@@ -71,6 +71,25 @@ docker compose up -d
 
 Compose 使用独立的持久卷 `/locks`；如同时运行本机直连飞书插件，应改成双方可访问的共享锁目录，或统一通过网关写入，避免两套独立锁。Pangolin/Newt 与源站的具体网络连接需按你的现有部署填写；此项目不会改动正在运行的 Pangolin 服务。
 
+### GitHub Actions 镜像发布
+
+工作流位于 `.github/workflows/image.yml`，镜像发布至 GitHub Container Registry：
+
+```sh
+docker pull ghcr.io/tursom/feishu-gateway:latest
+```
+
+- 推送 `master` / `main`：测试通过后发布对应分支标签及 `sha-<完整提交 SHA>`；仅仓库默认分支更新 `latest`。
+- 推送 `v*` 标签：发布同名镜像标签，例如 `v1.0.0`，同时提供提交 SHA 标签；版本发布不会覆盖 `latest`。
+- 在 GitHub Actions 页面手动运行 **Build and publish image**：发布所选分支或标签的镜像；选择非默认分支不会覆盖 `latest`。
+- PR：运行测试并构建双架构镜像，不登录 GHCR、不推送镜像。
+
+支持 `linux/amd64` 和 `linux/arm64`。发布前运行 `go test -race ./...` 和 `go vet ./...`；构建使用缓存，并生成来源证明和 SBOM。镜像摘要及标签显示在工作流运行摘要中。
+
+认证使用 GitHub 自动提供的 `GITHUB_TOKEN`，发布 job 申请 `packages: write`，无需额外配置 PAT 或飞书凭据。镜像不会内置运行配置、数据库或密钥。GHCR 包默认可见性由 GitHub 决定；如需匿名拉取，在包设置中将可见性设为 Public。已有同名包时，需确认该仓库具有包的 Actions 写权限。
+
+使用发布镜像部署时，将 Compose 中的 `build: .` 替换为 `image: ghcr.io/tursom/feishu-gateway:v1.0.0`（换成实际版本），保留原有环境变量、端口、数据卷和 secret 配置，再执行 `docker compose pull && docker compose up -d`。
+
 ## 数据表范围
 
 | 表别名 | 可用范围 |
