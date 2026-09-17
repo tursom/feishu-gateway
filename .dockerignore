@@ -1,10 +1,9 @@
 .git
 .env*
 data
-locks
 bin
-node_modules
+locks
 *.sqlite*
+*.log
 feishu-credentials.json
 .feishu-credentials-*
-*.log

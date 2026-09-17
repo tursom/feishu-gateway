@@ -1,147 +1,93 @@
-# 飞书 API 管理台
+# 飞书管理网关
 
-独立 Go 服务，内嵌原生 HTML/CSS/JavaScript 页面，SQLite 持久化。运行时不依赖 Node.js，不需要前端构建服务。
+Go 单程序，内嵌管理页面，SQLite 保存飞书凭据、调用方 Token 和操作日志。管理访问交给现有的 Pangolin 与防火墙；对外业务 API 使用 Bearer Token。
 
-## 启动
-
-Go 1.25+：
-
-```sh
-make build
-make test
-make check
-# 本地开发，强制只监听回环地址：
-make run
-```
-
-访问 `http://127.0.0.1:8787`。如果浏览器不在服务器上，可使用 SSH 转发：`ssh -L 8787:127.0.0.1:8787 user@server`，再用本机浏览器打开相同地址。`AUTH_MODE=local` 不提供用户登录，只供本机开发，不允许绑定公网地址。
-
-首次启动后进入后台 **「服务设置 → 飞书应用凭据」**，填写飞书开放平台的 App ID 和 App Secret，保存后再点击「测试飞书连接」。保存立即生效，无需重启，也无需手工创建或挂载凭据文件。Secret 不回显；同一 App ID 留空 Secret 表示保留原值，更换 App ID 则必须填写新 Secret。
-
-后台配置自动保存在 SQLite 同目录的 `feishu-credentials.json` 中，文件权限0600，采用临时文件和原子替换保存；Docker 下位于本地数据目录 `./data`，重启和更新镜像后仍然保留。该文件包含 Secret，备份数据目录时一并保护，不要提交到仓库。保存仅代表配置写入成功，实际飞书权限需通过连接测试确认。
-
-未保存后台配置时，兼容 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 及 `FEISHU_CREDENTIALS_FILE`；原生部署默认回退到 `~/.config/feishu/credentials.json`。后台保存的完整凭据优先于这些旧配置，不会修改原凭据文件。尚未配置凭据时，应用、Token 和审计管理仍可运行，飞书操作会明确报配置错误。
-
-首次启动没有预置 Token 或演示记录。在后台创建应用，选择权限，复制仅显示一次的 Token。刷新页面后配置仍保存在 SQLite，无法重新获取完整 Token，只能轮换。轮换立即使旧 Token 失效，禁用和到期也立即影响新请求；已发出的飞书请求可能继续完成。
-
-## 路径与鉴权
-
-| 路径 | 认证方式 |
-|---|---|
-| `/`、`/assets/*` | Pangolin 保护，服务校验可信入口 |
-| `/admin-api/*` | Pangolin 保护，服务校验可信入口；管理写请求另校验 Origin 与 CSRF Token |
-| `/api/v1/*` | Pangolin 精确路径白名单；服务独立校验 Bearer Token 和应用权限 |
-| `/healthz` | 与管理入口相同的访问校验，只返回存活状态 |
-
-管理端不提供独立账号密码。调用方的 API Token 无权登录后台、创建其他 Token 或访问管理 API；Pangolin 转发的身份也不能替代业务 API Token。
-
-### Pangolin 部署契约
-
-1. 建立一个要求 Pangolin 登录的资源，将该资源的访问权只授予后台管理员。
-2. 只对 **`/api/v1/*`** 设置绕过 Pangolin 登录的路径规则。不要放行 `/admin-api/*`、根路径或整个 `/api/*`。如规则区分 exact/prefix/glob，按实际版本匹配 `/api/v1/` 下所有子路径，并实际测试未登录访问被正确拒绝。
-3. 设置生产环境 `AUTH_MODE=pangolin`、`PUBLIC_ORIGIN=https://实际域名`，并使用 `openssl rand -hex 32` 生成 `PANGOLIN_PROXY_SECRET`。
-4. 可信反向代理必须 **覆盖** `X-Gateway-Secret` 为此入口密钥，保留实际域名的 `Host`，不允许客户端提供的同名头透传。具体配置入口取决于 Pangolin/Traefik 版本；若当前版本不能覆盖上游请求头，可在受保护的私网入口加入反向代理实现覆盖，但该代理不得能被绕过 Pangolin 直接访问。该密钥不能发送给浏览器或 API 调用方。
-5. 将服务配置的 `TRUSTED_PROXY_IPS` 设为连接 Go 服务的真实对端 IP（支持逗号分隔的精确 IPv4/IPv6），不使用 `X-Forwarded-For` 判断可信来源。生产管理员请求同时要求对端 IP 和入口密钥匹配。
-6. 源站不开放公网端口；仅允许 Pangolin 代理/隧道访问。可选的 `PANGOLIN_IDENTITY_HEADER` 只有在可信入口明确覆盖真实身份值时才能启用。默认不假设某个 Pangolin 身份头存在，审计显示“Pangolin 管理员”。若需逐人审计，必须接入已经核实的身份头。
-7. 验收：匿名浏览器不能访问后台或 `/admin-api/session`；业务 API 不带 Token 返回401；仅有 API Token 访问管理接口仍被拒绝；合法 Token 只能执行对应权限。
-
-Pangolin 的公网登录策略由 Pangolin 执行，入口密钥用于防止直接绕过源站，不能代替 Pangolin 配置。应用启动时缺少生产入口密钥或 HTTPS 公网地址会拒绝启动。
-
-### 环境配置
-
-参考 `.env.example`。Go 二进制不自动解析 `.env`；可用 systemd 的 `EnvironmentFile=` 注入，或者仅对自己创建并信任的配置运行：
-
-```sh
-set -a
-. ./.env
-set +a
-./bin/feishu-gateway
-```
-
-`DATABASE_PATH` 默认 `./data/gateway.sqlite`。数据目录应位于本地持久磁盘。数据库文件权限0600；WAL运行期间备份请使用 SQLite 在线备份功能，或停止服务后备份整个数据目录。需保护备份，其中包含业务响应和审计数据。幂等记录当前不自动清理，以防旧请求重复创建。
-
-原生部署默认使用 `~/.cache/pi-feishu-locks`，与现有 pi 插件在本机使用同一套表级写锁；可用 `FEISHU_LOCK_DIR` 指定。残留锁只在确认无进行中的写操作后手动移除。此锁及 SQLite 适用于单机实例，不是多主集群方案。
-
-### Docker
-
-Compose 默认直接拉取 `ghcr.io/tursom/feishu-gateway:latest`，不在部署机器上构建。可通过 `.env` 中的 `FEISHU_IMAGE` 固定版本标签或镜像摘要。镜像使用默认 root 用户运行，不创建专用用户，Compose 将8787端口仅绑定宿主机回环地址。复制 `.env.example` 为 `.env` 并填入实际配置。使用 Compose 自动创建和分配地址的默认网络，不指定子网或固定网关。`TRUSTED_PROXY_IPS` 按实际连接服务的可信代理对端配置，不预设 Docker 网关地址。
-
-Compose 无需飞书 secret 文件挂载或 `FEISHU_SECRET_SOURCE`，启动后在管理后台填写凭据即可。旧部署升级此 Compose 时，原 `FEISHU_SECRET_SOURCE` 挂载将被移除，请在后台保存凭据；如果需要继续使用旧凭据文件，可在自定义 Compose 覆盖文件中保留只读挂载，并用 `FEISHU_CREDENTIALS_FILE` 指向对应容器路径。
-
-数据与写锁使用宿主机目录挂载，不创建 Docker 命名卷：
-
-| 宿主机路径（可配置） | 容器路径 | 用途 |
-|---|---|---|
-| `FEISHU_DATA_DIR`，默认 `./data` | `/data` | SQLite 数据库、WAL 文件及后台保存的飞书凭据 |
-| `FEISHU_LOCKS_DIR`，默认 `./locks` | `/locks` | 表级写锁 |
-
-相对路径以 Compose 项目目录为基准。数据和锁目录不存在时由 Docker 自动创建，无需手动创建用户或调整目录所有者：
+## 部署
 
 ```sh
 docker compose pull
 docker compose up -d
 ```
 
-如果已有命名卷中的数据库，先停止旧服务并备份，将数据库及相关 WAL 文件迁移到本地数据目录，再启动新配置；不要直接启动空目录替代原数据。GHCR 镜像为私有包时，需先通过 `docker login ghcr.io` 配置拉取权限。
+默认端口8787，数据目录 `./data`。无需 `.env`；需要改端口、数据路径或镜像版本时参考 `.env.example`。Compose 只有镜像、端口映射和一个本地目录挂载，使用默认用户及默认网络。
 
-如同时运行本机直连飞书插件，应让 `FEISHU_LOCKS_DIR` 指向双方可访问的共享锁目录，或统一通过网关写入，避免两套独立锁。Pangolin/Newt 与源站的具体网络连接需按你的现有部署填写；此项目不会改动正在运行的 Pangolin 服务。
+在 Pangolin 中保护管理页面和 `/admin-api/*`，只将 `/api/v1/*` 加入登录白名单。源站由现有防火墙隔离。应用不再要求可信 IP、代理密钥、固定公网地址或专用身份头。后台没有额外登录系统；管理员写请求使用普通自定义请求头阻止跨站表单提交。
 
-### GitHub Actions 镜像发布
+首次打开后台：
 
-工作流位于 `.github/workflows/image.yml`，镜像发布至 GitHub Container Registry：
+1. 在「服务设置」填写飞书 App ID 和 App Secret。
+2. 在「应用与 Token」创建调用方、选择权限，保存生成的 Token。
+3. 在「API 调试」中选择应用和数据表，发送读取请求验证接入。
+
+Secret 不回显，同一 App ID 下留空表示保留；更换 App ID 时必须填写新 Secret。配置保存在数据目录的 SQLite 中，更新镜像后仍然保留。Token 明文只在创建或轮换时显示，数据库保存其哈希值。
+
+## 服务边界
+
+- 每次业务调用至多向飞书发送一次对应操作。首次认证、令牌到期或解析知识库时会有必要的认证/解析请求。
+- 返回飞书实际 HTTP 状态、业务 `code`、`msg` 和 `data`；HTTP200 不代表业务 code 一定成功。
+- 不做请求去重、幂等缓存、自动重试、写后查询或结果比对。
+- 更新不要求 revision，不获取写锁，不在更新前读取记录。
+- 是否重试、如何防重复、是否查询确认，由调用方决定。网络错误只说明本次未取得完整响应，不推断业务结果。
+- 保留三个表的操作范围。写权限不隐含读取其他字段；仅写 Token 的写响应只包含本次提交的字段，并通过响应头说明过滤。
+
+飞书的需求状态和任务状态为流程字段，当前公开 API 不支持写入。网关展示这个平台限制，实际提交时直接返回飞书拒绝结果，不自行模拟状态流转。
+
+## 表和权限
+
+| 表别名 | 权限 | 行为 |
+|---|---|---|
+| `requirements` | `requirements:read` | 读取需求 |
+| `requirements` | `requirements:status` | 仅能提交需求状态修改，不允许创建需求 |
+| `tasks` | `tasks:read` / `tasks:write` | 读取 / 创建与更新任务 |
+| `bugs` | `bugs:read` / `bugs:create` | 读取 / 创建 BUG |
+| `bugs` | `bugs:status` | 仅更新 BUG状态 |
+| `bugs` | `bugs:edit` | 更新 BUG 其他字段及状态 |
+
+不提供删除记录或修改表结构的接口。人员、关联、字段选项等数据格式由飞书 API 校验。需要完整记录响应时，请同时授予对应 read 权限。
+
+## API
+
+详细接口见 [API.md](API.md)。读取示例：
 
 ```sh
-docker pull ghcr.io/tursom/feishu-gateway:latest
+curl https://你的域名/api/v1/tables \
+  -H "Authorization: Bearer $GATEWAY_TOKEN"
 ```
 
-- 推送 `master` / `main`：测试通过后发布对应分支标签及 `sha-<完整提交 SHA>`；仅仓库默认分支更新 `latest`。
-- 推送 `v*` 标签：发布同名镜像标签，例如 `v1.0.0`，同时提供提交 SHA 标签；版本发布不会覆盖 `latest`。
-- 在 GitHub Actions 页面手动运行 **Build and publish image**：发布所选分支或标签的镜像；选择非默认分支不会覆盖 `latest`。
-- PR：运行测试并构建双架构镜像，不登录 GHCR、不推送镜像。
-
-支持 `linux/amd64` 和 `linux/arm64`。发布前运行 `go test -race ./...` 和 `go vet ./...`；构建使用缓存，并生成来源证明和 SBOM。镜像摘要及标签显示在工作流运行摘要中。
-
-认证使用 GitHub 自动提供的 `GITHUB_TOKEN`，发布 job 申请 `packages: write`，无需额外配置 PAT 或飞书凭据。镜像不会内置运行配置、数据库或密钥。GHCR 包默认可见性由 GitHub 决定；如需匿名拉取，在包设置中将可见性设为 Public。已有同名包时，需确认该仓库具有包的 Actions 写权限。
-
-Compose 已默认使用发布镜像。需要固定版本时，在 `.env` 设置 `FEISHU_IMAGE=ghcr.io/tursom/feishu-gateway:v1.0.0`（换成实际版本），再执行 `docker compose pull && docker compose up -d`。
-
-## 数据表范围
-
-| 表别名 | 可用范围 |
-|---|---|
-| `requirements` | 读取；业务上最多允许更新需求状态，但该状态是 type24 流程字段，当前 API 不能写入 |
-| `tasks` | 创建、更新所有 API 可写字段；任务状态同样是流程字段，不能写入 |
-| `bugs` | 创建，常规更新 BUG状态；其他字段需 `bugs:edit` 和明确的 `reason` |
-
-不提供删除记录、修改表结构或权限接口。不存在的字段、只读字段和选项会在写入前检查；系统计算字段不可写。
-
-权限可选：`requirements:read`、`requirements:status`（受上述平台限制）、`tasks:read`、`tasks:write`、`bugs:read`、`bugs:create`、`bugs:status`、`bugs:edit`。写权限不隐含读取权限；调用方通常也需要相应 read 权限来获取字段和记录版本。
-
-## API 调用
-
-接口明细见 [API.md](API.md)。示例使用环境中的 `GATEWAY_TOKEN`，不得写入源码：
+创建任务：
 
 ```sh
-curl -H "Authorization: Bearer $GATEWAY_TOKEN" \
-  https://实际域名/api/v1/tables
+curl https://你的域名/api/v1/tables/tasks/records \
+  -H "Authorization: Bearer $GATEWAY_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"fields":{"任务名称":"完善登录异常处理"}}'
 ```
 
-默认每个应用每分钟60次，认证后的失败请求也计入预算，计数存储在 SQLite，跨进程重启有效。业务 API 入口另设每实例每分钟600次、最多64个并发请求的上限，覆盖未认证和拒绝请求；超过入口预算的请求不再逐条写入审计。最多16个并发飞书请求；超过返回503。请求体最大256KB。服务不开放跨域 CORS；外部客户端应在服务器端持有 Token。
+无须提交幂等键，也不会自动去重。数据表、字段和记录接口采用飞书原生响应格式。后台调试台发送真实请求，界面直接展示响应，不执行额外核验流程。
 
-更新前 `GET` 单条记录，提交返回的 `revision` 作为 `expectedRevision`；只提交修改字段。版本不符返回409。飞书没有提供此处的原子条件更新，无法彻底排除网页或其他客户端在检查之后的并发修改；写后会再次读取核验。完整回读仅供服务内部核验，写响应及其幂等重放只返回记录 ID、版本、提交字段和核验结果，不返回未提交的完整记录。读取记录仍需独立 read 权限。
+## 升级旧版本
 
-创建必须传 `Idempotency-Key`，更新可选。同一应用相同 Key 与相同请求会返回已保存的响应；不同请求使用相同 Key 返回409。处理中或进程崩溃遗留的 pending 请求返回待核实，禁止自动重新发起。飞书写入超时不会自动重试，结果不明会明确返回。调用方也不要更换 Key 重复创建。
+应用、Token 与日志继续使用原有 SQLite 表，现有 Token 可继续使用。首次启动新版本时，如果数据库还没有飞书设置，会自动导入同一数据目录中的旧 `feishu-credentials.json`。不会删除或覆盖旧凭据文件。
 
-后台调试台会发起真实请求，使用所选应用当前权限。写入前有显式确认，且与外部 API 共用权限、限流、幂等和审计逻辑。不会自动生成真实测试任务或 BUG。
+旧幂等缓存表和锁目录不再参与运行，也不会自动删除。旧环境变量 `AUTH_MODE`、`PUBLIC_ORIGIN`、`TRUSTED_PROXY_IPS`、`PANGOLIN_PROXY_SECRET`、`FEISHU_LOCK_DIR` 不再使用。
 
-## 测试与运维
+**业务 API 已简化为原生响应**：不再返回 `verified`、合成 revision 等字段，不要求 `expectedRevision` 或 `Idempotency-Key`。原来依赖网关缓存响应、网关比对结果或额外响应包装的调用方需要按新契约调整。
+
+SQLite 包含飞书 Secret，请保护数据目录及备份。日志只记录应用、动作、HTTP状态、业务code和上游追踪ID，不保存请求正文或密钥；后台展示最近100条。
+
+## 本地开发
+
+Go 1.25+，运行时无需 Node.js：
 
 ```sh
-go test -race ./...
-go vet ./...
+make test
+make check
 make build
+./bin/feishu-gateway
 ```
 
-测试使用临时数据库和模拟飞书上游，覆盖管理入口与 API Token 隔离、CSRF、Token生命周期、权限限制、幂等重放/并发/未知结果、分页和限流。启动日志只包含监听地址与认证模式；不输出 Token、飞书密钥、请求正文或上游原始错误。审计记录应用、动作、字段名、结果与原因，原因截断为1024字节，字段名合计最多2048字节。审计保留最近30天且最多约50,000条（每128次写入清理，短时可超过上限127条），不会清理幂等记录。创建/轮换 Token 的明文仅通过当次 HTTPS 响应交付。
+默认监听 `:8787`，数据库 `./data/gateway.sqlite`。原生运行可设置 `LISTEN_ADDR` 和 `DATABASE_PATH`。
 
-真实公网联调需要最终域名、Pangolin 入口头覆盖方式和可信对端 IP。真实写入需选择明确的业务记录或专用测试表完成验收。
+## 镜像发布
+
+GitHub Actions 运行 Go 测试后构建 amd64 / arm64 镜像并推送到 `ghcr.io/tursom/feishu-gateway`。默认分支更新 `latest`；`v*` 标签发布同名镜像；PR 只验证不推送。可手动触发，认证使用仓库的 `GITHUB_TOKEN`。

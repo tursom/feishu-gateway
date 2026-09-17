@@ -2,21 +2,7 @@ services:
   gateway:
     image: ${FEISHU_IMAGE:-ghcr.io/tursom/feishu-gateway:latest}
     restart: unless-stopped
-    init: true
-    stop_grace_period: 110s
-    env_file: .env
-    environment:
-      HOST: 0.0.0.0
-      DATABASE_PATH: /data/gateway.sqlite
-      FEISHU_LOCK_DIR: /locks
-    # Loopback only. The trusted proxy/tunnel must be on this host or the private network.
     ports:
-      - "127.0.0.1:8787:8787"
+      - "${PORT:-8787}:8787"
     volumes:
       - ${FEISHU_DATA_DIR:-./data}:/data
-      - ${FEISHU_LOCKS_DIR:-./locks}:/locks
-    security_opt:
-      - no-new-privileges:true
-    read_only: true
-    tmpfs:
-      - /tmp:size=16m,mode=1777

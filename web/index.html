@@ -1,17 +1,26 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>奈亚 · 飞书 API 管理台</title>
-<link rel="stylesheet" href="/assets/style.css">
-<script src="/assets/app.js" defer></script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>飞书 Gateway · 管理台</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/app.js" defer></script>
 </head>
 <body>
-<aside class="sidebar" id="sidebar"><div class="logo"><div class="mark">N</div><div>奈亚<div class="brand-sub">FEISHU GATEWAY</div></div></div><div class="workspace">飞书 API 管理台</div><nav id="navigation" aria-label="管理导航"></nav><div class="nav-bottom">管理 API，让协作有据可查。<p id="session-state">正在验证管理会话…</p></div></aside>
-<main class="main"><header class="topbar"><button class="btn mobile-menu" id="menu-button" aria-label="切换导航" aria-expanded="false" aria-controls="sidebar">☰</button><div class="breadcrumb">工作空间 / <b id="crumb">概览</b></div><div class="top-right"><span class="pill">真实服务</span><span id="admin-name">会话加载中</span></div></header><div class="content" id="app" aria-live="polite"><div class="empty">正在加载…</div></div></main>
-<dialog id="modal" class="modal" aria-labelledby="modal-title"></dialog>
-<div id="toast-root" role="status" aria-live="polite"></div>
-<noscript>请启用 JavaScript 以使用管理台。</noscript>
+  <aside class="sidebar">
+    <a class="brand" href="#overview"><span class="mark">飞</span><span>飞书 Gateway<small>API 管理台</small></span></a>
+    <nav aria-label="主导航">
+      <a href="#overview">概览</a><a href="#apps">应用 Token</a><a href="#tables">资源</a><a href="#debug">调试</a><a href="#logs">日志</a><a href="#settings">设置</a>
+    </nav>
+    <div class="sidebar-foot">统一管理访问与调用</div>
+  </aside>
+  <main>
+    <header class="topbar"><span>工作空间 / <b id="crumb">概览</b></span><span>管理台</span></header>
+    <div class="content"><div class="page-head"><div><p class="eyebrow">FEISHU GATEWAY</p><h1 id="title">概览</h1><p id="subtitle" class="muted"></p></div><button id="reload" type="button">刷新</button></div><div id="page" aria-live="polite"></div></div>
+  </main>
+  <dialog id="dialog" aria-labelledby="dialog-title"></dialog>
+  <div id="notice" role="status" hidden></div>
 </body>
 </html>

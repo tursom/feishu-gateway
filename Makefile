@@ -8,8 +8,5 @@ test:
 check:
 	go vet ./...
 
-test-short:
-	go test ./...
-
 run:
-	AUTH_MODE=local HOST=127.0.0.1 PORT=8787 PUBLIC_ORIGIN=http://127.0.0.1:8787 go run ./cmd/gateway
+	go run ./cmd/gateway

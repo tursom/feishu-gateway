@@ -2,11 +2,9 @@
 .env.*
 !.env.example
 /data/
-/locks/
 /bin/
 *.sqlite*
-feishu-credentials.json
-.feishu-credentials-*
 *.log
 coverage.out
-node_modules/
+feishu-credentials.json
+.feishu-credentials-*

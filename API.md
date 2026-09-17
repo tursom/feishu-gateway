@@ -1,107 +1,100 @@
-# API v1
+# API
 
-Base URL: `https://<域名>/api/v1`。所有业务请求须带 `Authorization: Bearer fsg_...`。不接受 URL 参数传 Token。
-
-成功：`{"data": ...}`。失败：`{"requestId":"req_...","error":{"code":"...","message":"..."}}`。每个响应含 `X-Request-ID`。日期均为 UTC ISO8601，飞书日期字段本身使用毫秒时间戳。
+业务前缀 `/api/v1`，请求头 `Authorization: Bearer <Token>`。
 
 ## 业务接口
 
-| 方法 | 路径 | 权限 |
+| 方法 | 路径 | 请求 |
 |---|---|---|
-| GET | `/tables` | 已认证；仅返回当前应用有权限的表 |
-| GET | `/tables/{table}/fields` | `{table}:read` |
-| POST | `/tables/{table}/records/search` | `{table}:read` |
-| GET | `/tables/{table}/records/{recordId}` | `{table}:read` |
-| POST | `/tables/{table}/records` | `tasks:write` 或 `bugs:create` |
-| PATCH | `/tables/{table}/records/{recordId}` | 按表及字段判断 |
+| GET | `/tables` | 返回当前 Token 可访问的表，`{"data":[...]}` |
+| GET | `/tables/{table}/fields` | 飞书原生 `page_size` / `page_token` 查询参数 |
+| POST | `/tables/{table}/records/search` | 飞书原生筛选请求及查询参数 |
+| GET | `/tables/{table}/records/{id}` | 直接读取单条记录 |
+| POST | `/tables/{table}/records` | `{"fields":{...}}` |
+| PATCH / PUT | `/tables/{table}/records/{id}` | `{"fields":{...}}`，映射为飞书 PUT |
 
-`table` 为 `requirements` / `tasks` / `bugs`。记录 ID 使用飞书实际 `rec...` 值。
+`table` 为 `requirements`、`tasks`、`bugs`。字段/记录接口的 HTTP 状态和 JSON 正文来自飞书。页大小、下一页游标、过滤条件使用飞书原生格式，不做自动翻页。
 
-### 搜索
+查询未解决的 BUG：
+
+```http
+POST /api/v1/tables/bugs/records/search?page_size=20
+Authorization: Bearer <Token>
+Content-Type: application/json
+```
 
 ```json
 {
-  "limit": 20,
   "filter": {
     "conjunction": "and",
     "conditions": [{"field_name":"BUG状态","operator":"is","value":["未解决"]}]
   },
-  "fieldNames": ["Bug 描述", "BUG状态"]
+  "field_names": ["Bug 描述","BUG状态"]
 }
 ```
 
-搜索整个数据表，不隐含视图筛选。`data.items` 是飞书记录数组，`data.has_more` 为 true 时使用 `data.page_token` 作为下一次的 `pageToken`。limit 默认20，最大100。更新前使用 get 获取完整记录及版本，不能从字段被裁剪的搜索结果推断版本。
-
-### 创建
-
-必须提供请求头 `Idempotency-Key: <8至128位唯一键>`，允许字母、数字、点、下划线与横线。
-
-```json
-{"fields":{"任务名称":"完善登录异常处理","备注":"按已确认的需求处理"}}
-```
-
-只填写真实存在且可写的字段。需求不能创建。人员字段使用当前飞书应用对应的 open_id，关联字段使用目标记录 ID；不自动上传附件。
-
-### 更新
-
-先 GET 记录，读取 `data.revision`。再 PATCH：
+典型飞书响应：
 
 ```json
 {
-  "expectedRevision":"<64位revision>",
-  "fields":{"BUG状态":"待验收"}
+  "code": 0,
+  "msg": "success",
+  "data": {"items": [], "has_more": false}
 }
 ```
 
-BUG 非状态字段需要 `bugs:edit`，并填写：
+继续翻页时，将飞书返回的 `data.page_token` 放入下一次 URL 的 `page_token`。
+
+更新 BUG 状态：
 
 ```json
-{
-  "expectedRevision":"<64位revision>",
-  "fields":{"备注":"补充经确认的复现步骤"},
-  "reason":"根据负责人的明确要求补充复现步骤"
-}
+{"fields":{"BUG状态":"待验收"}}
 ```
 
-状态更新权限不自动允许其他字段。`bugs:edit` 也可更新状态。需求仅允许业务上的状态更新，但当前需求/任务状态均为 API 不可写的流程字段，返回422。
+不要求 `expectedRevision`、幂等键或额外修改原因。更新非状态字段需要 `bugs:edit` 权限。没有删除接口。
 
-创建返回201，更新返回200。写入结果包含 `verified`、`record`、`submittedFields`、`mismatchedFields`。`record` 仅含 `record_id` 和 `revision`，完整回读仅用于服务内部核验；写响应与幂等重放都不返回未提交字段，读取完整记录需独立 read 权限。`verified=false` 不能当作回读核验成功。
+## 响应与失败
 
-## 错误语义
+- 上游响应保留真实 HTTP 状态和原生业务 `code` / `msg` / `data`。例如飞书可能用 HTTP200 返回非0业务code，调用方需要检查业务code。
+- `X-Upstream-Stage` 为 `auth`、`resolve` 或 `operation`，表示返回的响应来自认证、知识库解析还是对应业务操作。认证/解析被拒绝时，不会继续发起业务操作。
+- 有上游追踪 ID 时放入 `X-Feishu-Request-ID`。
+- 对仅写 Token，写响应去除未提交的记录字段，`X-Response-Fields: submitted-only` 表示发生了权限过滤；业务状态和错误信息不因过滤而改变。
+- 确实没有取得完整 HTTP 响应时，网关返回502及 `{"error":{"message":"...","stage":"operation","responseReceived":false}}`。如果已收到响应头但读取正文失败，`responseReceived` 为 true，并附 `upstreamHttpStatus`。这不代表写入成功或失败。
+- 网关自身的 Token、权限或请求格式错误使用相应4xx及 `{"error":{"message":"..."}}`，不伪装成飞书响应。
 
-| HTTP | 常见错误 | 调用方处理 |
-|---|---|---|
-| 400 | INVALID_JSON / REVISION_REQUIRED / IDEMPOTENCY_KEY_REQUIRED | 修正参数 |
-| 401 | INVALID_TOKEN | 提供有效 API Token |
-| 403 | TOKEN_DISABLED / TOKEN_EXPIRED / SCOPE_DENIED / POLICY_DENIED | 检查应用权限与状态 |
-| 409 | REVISION_CONFLICT | 重新读取，依据当前值决定修改 |
-| 409 | IDEMPOTENCY_CONFLICT | 不要把旧 Key 用于不同请求 |
-| 409 | IDEMPOTENCY_PENDING | 请求仍执行或结果待核实，先查记录与日志 |
-| 422 | FIELD_READ_ONLY / INVALID_FIELD / INVALID_OPTION | 读取字段定义后修正 |
-| 429 | RATE_LIMITED / ENTRY_RATE_LIMITED | 应用或入口预算耗尽，等待下一分钟，遵循 Retry-After |
-| 502 | UPSTREAM_ERROR | 检查飞书权限/可用性 |
-| 502 | WRITE_UNCERTAIN | 飞书写入可能已成功，禁止盲目重试创建 |
-| 502 | VERIFICATION_FAILED | 已写入但回读失败，根据 recordId 核实 |
-| 503 | BUSY / IDEMPOTENCY_SAVE_FAILED | 繁忙可用相同 Key 重试；保存失败先核实结果 |
-
-幂等重放保留原响应中的 requestId，当前 HTTP 响应头 X-Request-ID 标识这次重放调用，两者可能不同。Token撤销/过期或权限减少后不会因幂等记录而绕过校验。
+服务不缓存写入结果、不去重、不重试、不写后回读。即使重复携带同一个 `Idempotency-Key`，也是两次独立请求。重试、重复记录控制和结果核实由调用方负责。
 
 ## 管理接口
 
-这些接口不在 Pangolin 白名单内，不接受外部应用 Token 作为管理员凭据。
+管理访问由 Pangolin 和源站网络隔离保护。下列接口不加入 Pangolin 白名单。
 
-`GET /admin-api/session` 获取 `{csrfToken, authMode, adminName, publicOrigin}`。所有管理 POST/PATCH 需携带 `Origin: <PUBLIC_ORIGIN>` 和 `X-CSRF-Token`，浏览器同源调用会自动提供 Origin。
+管理 POST/PATCH 使用 `Content-Type: application/json` 和 `X-Requested-With: FeishuGateway`；这个头用于防止跨站表单请求，不是认证密钥。浏览器同源管理页面自动添加。不需要额外代理密钥、IP白名单或随机 CSRF Token。
 
-- `GET /admin-api/overview`：今日请求、成功率、7天趋势、最近操作。
-- `GET /admin-api/apps`：应用列表，仅含 Token 前缀。
-- `POST /admin-api/apps`：`{name,description,scopes,expiresAt}`，返回 `{data:{app,token}}`，token仅此一次展示。
-- `PATCH /admin-api/apps/{id}`：可修改 `{name,description,scopes,expiresAt,enabled}`。
-- `POST /admin-api/apps/{id}/rotate`：空对象请求体，生成新 Token，旧值立即失效。
-- `GET /admin-api/resources`：全局表范围。
-- `GET /admin-api/logs?limit=50&offset=0&result=all&q=...`：分页审计，limit最多500；result可选all/success/failure。
-- `GET /admin-api/settings`：服务配置摘要；`feishu` 包含 `appId`、`secretConfigured`、`source`（managed/environment/file/unconfigured），不返回 Secret。
-- `POST /admin-api/feishu-credentials`：`{appId,appSecret?}`，保存飞书应用凭据并立即刷新认证缓存；返回 `{data:{appId,secretConfigured,source}}`。首次或更换 App ID 必须提交 Secret；同一 App ID 的 Secret 留空或省略表示保留原值。此接口只允许通过管理入口调用，受 Origin 和 CSRF 校验保护；审计只记录凭据发生修改，不记录值。保存成功不等于飞书连接验证成功，请另行测试连接。
-- `POST /admin-api/connection-test`：空对象，真实只读查询三个表字段。
-- `POST /admin-api/debug`：`{appId,action,table,recordId?,fields?,expectedRevision?,filter?,fieldNames?,limit?,pageToken?,reason?,idempotencyKey?}`。使用指定应用当前权限发起真实业务调用，返回 `{data:{status,body}}`。外层200表示调试动作被接收，实际业务状态看 `data.status`。
+管理响应格式 `{ "data": ... }`，错误 `{ "error": { "message": ... } }`。
 
-应用权限枚举和 Pangolin 部署说明见 README。
+| 接口 | 说明 |
+|---|---|
+| `GET /admin-api/overview` | 应用总数、累计日志数量、最近操作 |
+| `GET /admin-api/settings` | `{appId,secretConfigured}`，不返回 Secret |
+| `POST /admin-api/settings` | `{appId,appSecret?}`；同 App ID 留空保留，首次/更换 ID 必填 |
+| `GET /admin-api/apps` | 应用列表，无 Token 明文 |
+| `POST /admin-api/apps` | `{name,description,scopes,expiresAt}` → `{app,token}` |
+| `PATCH /admin-api/apps/{id}` | 修改名称、用途、权限、有效期或 enabled |
+| `POST /admin-api/apps/{id}/rotate` | 空对象 → `{app,token}`，旧 Token 立即失效 |
+| `GET /admin-api/tables` | 三张表及维护范围 |
+| `GET /admin-api/logs` | 最近100条操作日志 |
+| `POST /admin-api/debug` | 使用指定应用权限发起一次真实操作 |
+
+调试请求：
+
+```json
+{
+  "appId": "<调用方应用ID>",
+  "table": "bugs",
+  "action": "search",
+  "pageSize": 20,
+  "payload": {}
+}
+```
+
+`action` 可选 fields/search/get/create/update；get/update 传 `recordId`，写入传 `payload:{"fields":{...}}`。返回 `{data:{httpStatus,stage,requestId,body}}`，`body` 为上游原始JSON，非JSON正文按字符串展示。外层HTTP200表示调试接口返回了结果，不代表飞书业务操作成功。
