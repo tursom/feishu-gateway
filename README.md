@@ -64,7 +64,7 @@ set +a
 
 ### Docker
 
-Compose 默认直接拉取 `ghcr.io/tursom/feishu-gateway:latest`，不在部署机器上构建。可通过 `.env` 中的 `FEISHU_IMAGE` 固定版本标签或镜像摘要。镜像使用默认 root 用户运行，不创建专用用户，Compose 将8787端口仅绑定宿主机回环地址。复制 `.env.example` 为 `.env` 并填入实际配置。Compose 固定私网网段 `172.30.87.0/24`；宿主机代理通过端口映射访问时通常以网关 `172.30.87.1` 出现，仍需检查实际对端后设置 `TRUSTED_PROXY_IPS`。若此网段已占用，请同时调整网段与可信 IP。
+Compose 默认直接拉取 `ghcr.io/tursom/feishu-gateway:latest`，不在部署机器上构建。可通过 `.env` 中的 `FEISHU_IMAGE` 固定版本标签或镜像摘要。镜像使用默认 root 用户运行，不创建专用用户，Compose 将8787端口仅绑定宿主机回环地址。复制 `.env.example` 为 `.env` 并填入实际配置。使用 Compose 自动创建和分配地址的默认网络，不指定子网或固定网关。`TRUSTED_PROXY_IPS` 按实际连接服务的可信代理对端配置，不预设 Docker 网关地址。
 
 Compose 无需飞书 secret 文件挂载或 `FEISHU_SECRET_SOURCE`，启动后在管理后台填写凭据即可。旧部署升级此 Compose 时，原 `FEISHU_SECRET_SOURCE` 挂载将被移除，请在后台保存凭据；如果需要继续使用旧凭据文件，可在自定义 Compose 覆盖文件中保留只读挂载，并用 `FEISHU_CREDENTIALS_FILE` 指向对应容器路径。
 

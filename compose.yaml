@@ -20,10 +20,3 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
-    networks:
-      - gateway-private
-networks:
-  gateway-private:
-    ipam:
-      config:
-        - subnet: 172.30.87.0/24
