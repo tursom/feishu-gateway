@@ -1,6 +1,6 @@
 services:
   gateway:
-    build: .
+    image: ${FEISHU_IMAGE:-ghcr.io/tursom/feishu-gateway:latest}
     restart: unless-stopped
     init: true
     stop_grace_period: 110s
@@ -14,8 +14,16 @@ services:
     ports:
       - "127.0.0.1:8787:8787"
     volumes:
-      - gateway-data:/data
-      - gateway-locks:/locks
+      - type: bind
+        source: ${FEISHU_DATA_DIR:-./data}
+        target: /data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${FEISHU_LOCKS_DIR:-./locks}
+        target: /locks
+        bind:
+          create_host_path: false
     secrets:
       - feishu_credentials
     security_opt:
@@ -29,9 +37,6 @@ services:
 secrets:
   feishu_credentials:
     file: ${FEISHU_SECRET_SOURCE:?Set FEISHU_SECRET_SOURCE to a container-readable credential file}
-volumes:
-  gateway-data:
-  gateway-locks:
 networks:
   gateway-private:
     ipam:

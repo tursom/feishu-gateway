@@ -60,16 +60,28 @@ set +a
 
 ### Docker
 
-`Dockerfile` 生成非 root 运行镜像，Compose 将8787端口仅绑定宿主机回环地址。复制 `.env.example` 为 `.env` 并填入实际配置。Compose 固定私网网段 `172.30.87.0/24`；宿主机代理通过端口映射访问时通常以网关 `172.30.87.1` 出现，仍需检查实际对端后设置 `TRUSTED_PROXY_IPS`。若此网段已占用，请同时调整网段与可信 IP。
+Compose 默认直接拉取 `ghcr.io/tursom/feishu-gateway:latest`，不在部署机器上构建。可通过 `.env` 中的 `FEISHU_IMAGE` 固定版本标签或镜像摘要。镜像以 UID10001 非 root 运行，Compose 将8787端口仅绑定宿主机回环地址。复制 `.env.example` 为 `.env` 并填入实际配置。Compose 固定私网网段 `172.30.87.0/24`；宿主机代理通过端口映射访问时通常以网关 `172.30.87.1` 出现，仍需检查实际对端后设置 `TRUSTED_PROXY_IPS`。若此网段已占用，请同时调整网段与可信 IP。
 
 `FEISHU_SECRET_SOURCE` 指向只读挂载的凭据文件。Compose 文件型 secret 实质为挂载，镜像使用 UID10001，源文件必须允许 UID10001 读取；建议在仓库外准备专用、权限0400且所有者为10001的副本，父目录不向其他用户开放。不要为了挂载把原凭据改成全局可读。
 
+数据与写锁使用宿主机目录挂载，不创建 Docker 命名卷：
+
+| 宿主机路径（可配置） | 容器路径 | 用途 |
+|---|---|---|
+| `FEISHU_DATA_DIR`，默认 `./data` | `/data` | SQLite 数据库及 WAL 文件 |
+| `FEISHU_LOCKS_DIR`，默认 `./locks` | `/locks` | 表级写锁 |
+
+相对路径以 Compose 项目目录为基准。先创建目录并确保 UID10001 有读写权限；配置了其他路径时，相应调整命令。缺少目录时 Compose 会报错，不会自动创建 root 所有的目录：
+
 ```sh
-docker compose build
+sudo install -d -m 0700 -o 10001 ./data ./locks
+docker compose pull
 docker compose up -d
 ```
 
-Compose 使用独立的持久卷 `/locks`；如同时运行本机直连飞书插件，应改成双方可访问的共享锁目录，或统一通过网关写入，避免两套独立锁。Pangolin/Newt 与源站的具体网络连接需按你的现有部署填写；此项目不会改动正在运行的 Pangolin 服务。
+如果已有命名卷中的数据库，先停止旧服务并备份，将数据库及相关 WAL 文件迁移到本地数据目录，确保迁移文件归 UID10001 所有，再启动新配置；不要直接启动空目录替代原数据。GHCR 镜像为私有包时，需先通过 `docker login ghcr.io` 配置拉取权限。
+
+如同时运行本机直连飞书插件，应让 `FEISHU_LOCKS_DIR` 指向双方可访问的共享锁目录，或统一通过网关写入，避免两套独立锁。Pangolin/Newt 与源站的具体网络连接需按你的现有部署填写；此项目不会改动正在运行的 Pangolin 服务。
 
 ### GitHub Actions 镜像发布
 
@@ -88,7 +100,7 @@ docker pull ghcr.io/tursom/feishu-gateway:latest
 
 认证使用 GitHub 自动提供的 `GITHUB_TOKEN`，发布 job 申请 `packages: write`，无需额外配置 PAT 或飞书凭据。镜像不会内置运行配置、数据库或密钥。GHCR 包默认可见性由 GitHub 决定；如需匿名拉取，在包设置中将可见性设为 Public。已有同名包时，需确认该仓库具有包的 Actions 写权限。
 
-使用发布镜像部署时，将 Compose 中的 `build: .` 替换为 `image: ghcr.io/tursom/feishu-gateway:v1.0.0`（换成实际版本），保留原有环境变量、端口、数据卷和 secret 配置，再执行 `docker compose pull && docker compose up -d`。
+Compose 已默认使用发布镜像。需要固定版本时，在 `.env` 设置 `FEISHU_IMAGE=ghcr.io/tursom/feishu-gateway:v1.0.0`（换成实际版本），再执行 `docker compose pull && docker compose up -d`。
 
 ## 数据表范围
 

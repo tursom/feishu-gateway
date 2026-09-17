@@ -1,6 +1,7 @@
 .git
 .env*
 data
+locks
 bin
 node_modules
 *.sqlite*
