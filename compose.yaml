@@ -14,21 +14,12 @@ services:
     ports:
       - "127.0.0.1:8787:8787"
     volumes:
-      - type: bind
-        source: ${FEISHU_DATA_DIR:-./data}
-        target: /data
-        bind:
-          create_host_path: false
-      - type: bind
-        source: ${FEISHU_LOCKS_DIR:-./locks}
-        target: /locks
-        bind:
-          create_host_path: false
+      - ${FEISHU_DATA_DIR:-./data}:/data
+      - ${FEISHU_LOCKS_DIR:-./locks}:/locks
     secrets:
       - feishu_credentials
     security_opt:
       - no-new-privileges:true
-    cap_drop: [ALL]
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
