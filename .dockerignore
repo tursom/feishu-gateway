@@ -5,4 +5,6 @@ locks
 bin
 node_modules
 *.sqlite*
+feishu-credentials.json
+.feishu-credentials-*
 *.log

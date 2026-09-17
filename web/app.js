@@ -6,6 +6,8 @@ const names = {overview:'概览',apps:'应用与 Token',resources:'资源与权�
 const tables = {requirements:'需求管理',tasks:'任务管理',bugs:'BUG 管理'};
 const scopes = {'requirements:read':'读取需求','tasks:read':'读取任务','tasks:write':'创建与更新任务','bugs:read':'读取 BUG','bugs:create':'创建 BUG','bugs:status':'更新 BUG 状态','bugs:edit':'修改 BUG 其他字段（需原因）'};
 const state = {session:null,page:'overview',apps:[],logs:[],offset:0,result:'all',q:'',generation:0,busy:false};
+const feishuSources = {managed:'后台管理配置',environment:'环境变量',file:'文件配置',unconfigured:'未配置'};
+let feishuSettings = null;
 const debug = {appId:'',table:'bugs',action:'search',recordId:'',expectedRevision:'',fields:'{}',filter:'',limit:'10',pageToken:'',reason:'',idempotencyKey:'',response:null};
 const date = value => value ? (Number.isNaN(Date.parse(value)) ? String(value) : new Date(value).toLocaleString('zh-CN')) : '—';
 const button = (text, action, extra='', cls='') => `<button type="button" class="btn ${cls}" data-action="${action}" ${extra}>${text}</button>`;
@@ -21,7 +23,11 @@ async function api(path, body, method='POST') {
     headers['Content-Type']='application/json'; headers['X-CSRF-Token']=state.session.csrfToken;
   }
   let response;
-  try { response=await fetch(`/admin-api/${path}`,{method:body===undefined?'GET':method,headers,credentials:'same-origin',cache:'no-store',...(body===undefined?{}:{body:JSON.stringify(body)})}); }
+  try {
+    const request=fetch(`/admin-api/${path}`,{method:body===undefined?'GET':method,headers,credentials:'same-origin',cache:'no-store',...(body===undefined?{}:{body:JSON.stringify(body)})});
+    body=undefined;
+    response=await request;
+  }
   catch { throw new Error('网络请求失败。写入结果可能未知，请先检查日志或读取记录；创建重试请复用原幂等键。'); }
   let value;
   try { value=await response.json(); } catch { throw new Error(`服务返回非 JSON 响应（HTTP ${response.status}），请检查登录状态；写入结果尚未确认。`); }
@@ -57,8 +63,49 @@ function logsPage(data) {
   return head('操作日志','查询真实请求的归属、结果和操作原因。',button('刷新','refresh'))+`<form id="log-form" class="toolbar"><input class="input search" name="q" aria-label="搜索日志" placeholder="搜索应用、记录或请求 ID" value="${esc(state.q)}"><select name="result" aria-label="结果筛选">${Object.entries({all:'全部结果',success:'成功',failure:'失败'}).map(([v,n])=>`<option value="${v}" ${state.result===v?'selected':''}>${n}</option>`).join('')}</select><button class="btn primary" type="submit">查询</button></form><section class="card">${logTable(state.logs)}<div class="table-foot"><span>共 ${esc(data.total)} 条 · 当前 ${data.items.length?state.offset+1:0}–${state.offset+data.items.length}</span><div class="actions">${button('上一页','prev',state.offset===0?'disabled':'')}${button('下一页','next',state.offset+50>=data.total?'disabled':'')}</div></div></section>`;
 }
 function settingsPage(data) {
-  const rows=[['管理端认证',data.authMode==='pangolin'?'Pangolin':data.authMode==='local'?'本地认证':data.authMode],['公开服务地址',data.publicOrigin],['每应用每分钟请求限额',data.rateLimitPerMinute],['飞书凭据',data.credentialConfigured?'已配置（连接状态需测试）':'未配置'],['服务版本',data.version]];
-  return head('服务设置','配置由服务端管理。连接测试将实际读取飞书数据表字段。')+`<section class="card"><div class="card-head"><h2>服务信息</h2></div><div class="card-body">${rows.map(([k,v])=>`<div class="rule"><span>${k}</span><b class="wrap">${esc(v ?? '—')}</b></div>`).join('')}<div class="endpoint">外部 API：<code>${esc((data.publicOrigin||'').replace(/\/$/,'')+'/api/v1/tables/...')}</code></div>${button('测试飞书连接','connection','','primary')}<pre id="connection-result" class="result-text" aria-live="polite">尚未测试连接</pre></div></section>`;
+  feishuSettings=validFeishuSettings(data.feishu)?{appId:data.feishu.appId,secretConfigured:data.feishu.secretConfigured,source:data.feishu.source}:null;
+  const rows=[['管理端认证',data.authMode==='pangolin'?'Pangolin':data.authMode==='local'?'本地认证':data.authMode],['公开服务地址',data.publicOrigin],['每应用每分钟请求限额',data.rateLimitPerMinute],['服务版本',data.version]];
+  return head('服务设置','保存飞书凭据后立即生效，无需重启服务。')+`<section class="card section"><div class="card-head"><h2>飞书应用凭据</h2></div><div class="card-body"><p id="feishu-status" role="status">${esc(feishuStatus())}</p><form id="feishu-form" novalidate><div class="form-row"><div class="field"><label for="feishu-app-id">飞书 App ID</label><input class="input" id="feishu-app-id" autocomplete="off" spellcheck="false" value="${esc(feishuSettings?.appId||'')}" required></div><div class="field"><label for="feishu-app-secret">飞书 App Secret</label><input class="input" id="feishu-app-secret" type="password" autocomplete="new-password" aria-describedby="feishu-secret-hint"><div class="hint" id="feishu-secret-hint">首次配置或更换 App ID 必须填写 Secret；同一 App ID 已配置 Secret 时，留空表示保留。</div></div></div><p id="feishu-error" class="error" role="alert"></p><button class="btn primary" type="submit" ${feishuSettings?'':'disabled'}>保存飞书凭据</button></form><div class="callout">管理配置存储在服务数据目录，无需手工创建凭据文件。Secret 不会回显；保存失败后请重新输入。</div></div></section><section class="card"><div class="card-head"><h2>服务信息</h2></div><div class="card-body">${rows.map(([k,v])=>`<div class="rule"><span>${k}</span><b class="wrap">${esc(v ?? '—')}</b></div>`).join('')}<div class="endpoint">外部 API：<code>${esc((data.publicOrigin||'').replace(/\/$/,'')+'/api/v1/tables/...')}</code></div>${button('测试已保存的飞书配置','connection','','primary')}<p class="hint">测试使用服务端已保存的配置，不使用表单中尚未保存的内容；将实际读取飞书数据表字段，不写入数据。</p><pre id="connection-result" class="result-text" aria-live="polite">尚未测试连接</pre></div></section>`;
+}
+function validFeishuSettings(value) {
+  return value && typeof value.appId==='string' && typeof value.secretConfigured==='boolean' && Object.hasOwn(feishuSources,value.source);
+}
+function feishuStatus() {
+  return feishuSettings?`${feishuSettings.secretConfigured?'Secret 已配置（连接状态需测试）':'Secret 未配置'} · 来源：${feishuSources[feishuSettings.source]}`:'无法读取飞书配置状态，请重新加载页面。';
+}
+function clearFeishuSecret() { if($('feishu-app-secret'))$('feishu-app-secret').value=''; }
+async function saveFeishuCredentials() {
+  if(state.busy)return;
+  const generation=state.generation;
+  const payload={appId:$('feishu-app-id').value.trim()};
+  if($('feishu-app-secret').value)payload.appSecret=$('feishu-app-secret').value;
+  clearFeishuSecret();
+  $('feishu-error').textContent='';
+  $('feishu-status').textContent=feishuStatus();
+  if(!feishuSettings || !payload.appId || ((!feishuSettings.secretConfigured || payload.appId!==feishuSettings.appId) && !payload.appSecret)) {
+    delete payload.appSecret;
+    $('feishu-error').textContent='请填写 App ID；首次配置或更换 App ID 必须重新填写 App Secret。';
+    return;
+  }
+  await task(async()=>{
+    try {
+      let request;
+      try { request=api('feishu-credentials',payload); }
+      finally { delete payload.appSecret; }
+      const data=await request;
+      if(!validFeishuSettings(data) || data.appId!==payload.appId || !data.secretConfigured || data.source!=='managed')throw new Error('无法确认保存结果');
+      if(generation!==state.generation)return;
+      feishuSettings={appId:data.appId,secretConfigured:data.secretConfigured,source:data.source};
+      $('feishu-app-id').value=data.appId;
+      $('feishu-status').textContent=`保存成功，已立即生效。${feishuStatus()}`;
+      $('connection-result').textContent='配置已保存，请重新测试连接。';
+    } catch {
+      if(generation===state.generation)$('feishu-error').textContent='保存失败或结果未确认。App ID 已保留，请重新输入 Secret；如网络中断，请重新加载核对服务端配置后再保存。';
+    } finally {
+      delete payload.appSecret;
+      if(generation===state.generation)clearFeishuSecret();
+    }
+  },'feishu-error');
 }
 function input(id,label,value='',type='text',hint='') { return `<div class="field"><label for="${id}">${label}</label><input class="input" id="${id}" type="${type}" step="1" value="${esc(value)}">${hint?`<div class="hint">${hint}</div>`:''}</div>`; }
 function debugPage() {
@@ -68,6 +115,8 @@ function debugPage() {
   return head('API 调试台','使用所选应用当前权限和有效期，向飞书发送真实请求。')+`<div class="banner"><strong>真实操作：</strong>创建和更新会修改飞书记录，提交前需确认。请求失败不一定意味着未写入；请核对结果后再重试。</div><div class="two-col debug-layout"><section class="card"><div class="card-head"><h2>请求</h2>${badge(write?'真实写入':'真实读取',write?'amber':'green')}</div><div class="card-body"><form id="debug-form"><div class="field section"><label for="debug-appId">调用应用</label><select id="debug-appId">${state.apps.map(a=>`<option value="${esc(a.id)}" ${String(a.id)===debug.appId?'selected':''}>${esc(a.name)}${!a.enabled?' · 已禁用':a.expiresAt&&Date.parse(a.expiresAt)<=Date.now()?' · 已过期':''}</option>`).join('')}</select></div><div class="form-row"><div class="field"><label for="debug-table">数据表</label><select id="debug-table">${Object.entries(tables).map(([k,v])=>`<option value="${k}" ${debug.table===k?'selected':''}>${v}</option>`).join('')}</select></div><div class="field"><label for="debug-action">操作</label><select id="debug-action">${Object.entries({search:'查询记录',get:'读取单条',fields:'读取字段',create:'创建记录',update:'更新记录'}).map(([k,v])=>`<option value="${k}" ${debug.action===k?'selected':''}>${v}</option>`).join('')}</select></div></div><div class="endpoint"><b>${({search:'POST',get:'GET',fields:'GET',create:'POST',update:'PATCH'})[debug.action]}</b><code>${esc(path)}</code></div>${['get','update'].includes(debug.action)?input('debug-recordId','记录 ID',debug.recordId):''}${debug.action==='update'?input('debug-expectedRevision','expectedRevision（必填）',debug.expectedRevision)+`<div class="section">${button('读取当前记录并填入 revision','read-revision')}<div class="hint">读取后请核对响应字段，再确认更新内容。</div></div>`:''}${write?`<div class="field section"><label for="debug-fields">fields · JSON 对象</label><textarea id="debug-fields" class="editor" spellcheck="false">${esc(debug.fields)}</textarea><div class="hint">请先读取字段定义，填写真实字段名、选项或人员 ID。</div></div>`:''}${debug.action==='search'?input('debug-limit','每页数量',debug.limit,'number')+input('debug-pageToken','下一页 pageToken',debug.pageToken)+`<div class="field section"><label for="debug-filter">filter · JSON 对象（可留空）</label><textarea id="debug-filter" class="editor" spellcheck="false">${esc(debug.filter)}</textarea></div>`:''}${write?input('debug-reason','操作原因 reason',debug.reason):''}${debug.action==='create'?input('debug-idempotencyKey','幂等键 idempotencyKey（必填）',debug.idempotencyKey,'text','同一次创建重试复用原键；下一次独立创建需生成新键。')+button('生成新幂等键','key'):''}<p id="debug-error" class="error" role="alert"></p><button class="btn primary" type="submit" ${state.apps.length?'':'disabled'}>${write?'检查并确认写入':'发送真实请求'}</button></form></div></section><section class="card"><div class="card-head"><h2>实际响应</h2><span id="response-status" class="hint">${debug.response?'最近一次请求':'等待请求'}</span></div><div class="card-body"><pre class="code" id="debug-response">${esc(debug.response?json(debug.response):'尚未发送请求。')}</pre><div class="callout">HTTP 状态和完整响应如下实展示。请检查 verified 等字段；核验失败或结果未知时，不应视为写入成功。</div></div></section></div>`;
 }
 async function render() {
+  clearFeishuSecret();
+  feishuSettings=null;
   const generation=++state.generation;
   state.page=Object.hasOwn(names,location.hash.slice(1))?location.hash.slice(1):'overview';
   $('navigation').innerHTML=Object.entries(names).map(([k,v])=>`<a class="nav-button ${k===state.page?'active':''}" href="#${k}" ${k===state.page?'aria-current="page"':''}>${v}</a>`).join('');
@@ -141,6 +190,7 @@ async function task(fn, target='modal-error') {
 }
 document.addEventListener('submit',e=>{
   e.preventDefault();
+  if(e.target.id==='feishu-form') { saveFeishuCredentials(); return; }
   if(e.target.id==='log-form') { const form=new FormData(e.target);state.q=String(form.get('q'));state.result=String(form.get('result'));state.offset=0;render(); }
   if(e.target.id==='app-form') {
     const index=e.target.dataset.index; const a=index===''?null:state.apps[index];
@@ -173,13 +223,24 @@ document.addEventListener('click',e=>{
   else if(action==='copy') task(async()=>{try{await navigator.clipboard.writeText($('new-token').textContent);toast('Token 已复制。');}catch{throw new Error('无法访问剪贴板，请手动选择并复制 Token。');}});
   else if(action==='log') {const l=state.logs[index];showModal('请求详情',`<dl class="log-detail">${Object.entries({请求ID:l.id,时间:date(l.time),应用:l.appName,操作:l.action,数据表:l.table,记录ID:l.recordId,HTTP状态:l.status,结果:l.result,涉及字段:(l.fieldNames||[]).join('、'),原因:l.reason,耗时:`${l.durationMs ?? '—'} ms`}).map(([k,v])=>`<dt>${k}</dt><dd>${esc(v ?? '—')}</dd>`).join('')}</dl>`,button('关闭','close'));}
   else if(action==='prev'||action==='next'){state.offset=Math.max(0,state.offset+(action==='next'?50:-50));render();}
-  else if(action==='connection')task(async()=>{const data=await api('connection-test',{});$('connection-result').textContent=json(data);if(data.ok===true)toast('连接测试通过，详情见实际响应。');},'connection-result');
+  else if(action==='connection') {
+    const generation=state.generation;
+    task(async()=>{
+      try {
+        const data=await api('connection-test',{});
+        if(generation!==state.generation)return;
+        $('connection-result').textContent=json(data);
+        if(data.ok===true)toast('连接测试通过，详情见实际响应。');
+      } catch(e) { if(generation===state.generation)$('connection-result').textContent=errorText(e); }
+    },'connection-result');
+  }
   else if(action==='key'){captureDebug();debug.idempotencyKey=crypto.randomUUID();$('debug-idempotencyKey').value=debug.idempotencyKey;}
   else if(action==='read-revision') {captureDebug();if(!debug.recordId.trim()){$('debug-error').textContent='请输入记录 ID。';return;}task(()=>runDebug({appId:state.apps.find(a=>String(a.id)===debug.appId)?.id,action:'get',table:debug.table,recordId:debug.recordId.trim()},true),'debug-error');}
   else if(action==='confirm-write')task(async()=>{const body=pending;await runDebug(body);pending=null;$('modal').close();$('modal').replaceChildren();},'modal-error');
 });
 $('modal').addEventListener('cancel',e=>{e.preventDefault();if(!state.busy){pending=null;closeModal();}});
 $('menu-button').addEventListener('click',()=>{const open=$('sidebar').classList.toggle('open');$('menu-button').setAttribute('aria-expanded',String(open));});
+window.addEventListener('pagehide',clearFeishuSecret);
 window.addEventListener('hashchange',()=>{if(state.session)render();});
 async function start() {try {state.session=await api('session');$('admin-name').textContent=state.session.adminName||'管理员';$('session-state').textContent=state.session.authMode==='pangolin'?'Pangolin 管理会话':'本地管理会话';await render();}catch(e){$('session-state').textContent='管理会话不可用';$('app').innerHTML=`<div class="banner error" role="alert">${esc(errorText(e))}</div><p>请完成管理端登录后刷新页面。</p>`;}}
 start();

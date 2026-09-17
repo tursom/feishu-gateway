@@ -16,7 +16,11 @@ make run
 
 访问 `http://127.0.0.1:8787`。如果浏览器不在服务器上，可使用 SSH 转发：`ssh -L 8787:127.0.0.1:8787 user@server`，再用本机浏览器打开相同地址。`AUTH_MODE=local` 不提供用户登录，只供本机开发，不允许绑定公网地址。
 
-默认复用 `~/.config/feishu/credentials.json`，格式为 `{"app_id":"...","app_secret":"..."}`。也可设置 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`，或通过 `FEISHU_CREDENTIALS_FILE` 指定路径。不要把凭据提交到仓库。没有凭据时，应用、Token 和审计管理仍可运行，飞书操作会明确报配置错误。
+首次启动后进入后台 **「服务设置 → 飞书应用凭据」**，填写飞书开放平台的 App ID 和 App Secret，保存后再点击「测试飞书连接」。保存立即生效，无需重启，也无需手工创建或挂载凭据文件。Secret 不回显；同一 App ID 留空 Secret 表示保留原值，更换 App ID 则必须填写新 Secret。
+
+后台配置自动保存在 SQLite 同目录的 `feishu-credentials.json` 中，文件权限0600，采用临时文件和原子替换保存；Docker 下位于本地数据目录 `./data`，重启和更新镜像后仍然保留。该文件包含 Secret，备份数据目录时一并保护，不要提交到仓库。保存仅代表配置写入成功，实际飞书权限需通过连接测试确认。
+
+未保存后台配置时，兼容 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 及 `FEISHU_CREDENTIALS_FILE`；原生部署默认回退到 `~/.config/feishu/credentials.json`。后台保存的完整凭据优先于这些旧配置，不会修改原凭据文件。尚未配置凭据时，应用、Token 和审计管理仍可运行，飞书操作会明确报配置错误。
 
 首次启动没有预置 Token 或演示记录。在后台创建应用，选择权限，复制仅显示一次的 Token。刷新页面后配置仍保存在 SQLite，无法重新获取完整 Token，只能轮换。轮换立即使旧 Token 失效，禁用和到期也立即影响新请求；已发出的飞书请求可能继续完成。
 
@@ -62,13 +66,13 @@ set +a
 
 Compose 默认直接拉取 `ghcr.io/tursom/feishu-gateway:latest`，不在部署机器上构建。可通过 `.env` 中的 `FEISHU_IMAGE` 固定版本标签或镜像摘要。镜像使用默认 root 用户运行，不创建专用用户，Compose 将8787端口仅绑定宿主机回环地址。复制 `.env.example` 为 `.env` 并填入实际配置。Compose 固定私网网段 `172.30.87.0/24`；宿主机代理通过端口映射访问时通常以网关 `172.30.87.1` 出现，仍需检查实际对端后设置 `TRUSTED_PROXY_IPS`。若此网段已占用，请同时调整网段与可信 IP。
 
-`FEISHU_SECRET_SOURCE` 指向宿主机上的飞书凭据文件，以只读方式挂载到容器。可以直接使用现有凭据文件，保留其严格文件权限，无需为容器用户另建副本或修改所有者。
+Compose 无需飞书 secret 文件挂载或 `FEISHU_SECRET_SOURCE`，启动后在管理后台填写凭据即可。旧部署升级此 Compose 时，原 `FEISHU_SECRET_SOURCE` 挂载将被移除，请在后台保存凭据；如果需要继续使用旧凭据文件，可在自定义 Compose 覆盖文件中保留只读挂载，并用 `FEISHU_CREDENTIALS_FILE` 指向对应容器路径。
 
 数据与写锁使用宿主机目录挂载，不创建 Docker 命名卷：
 
 | 宿主机路径（可配置） | 容器路径 | 用途 |
 |---|---|---|
-| `FEISHU_DATA_DIR`，默认 `./data` | `/data` | SQLite 数据库及 WAL 文件 |
+| `FEISHU_DATA_DIR`，默认 `./data` | `/data` | SQLite 数据库、WAL 文件及后台保存的飞书凭据 |
 | `FEISHU_LOCKS_DIR`，默认 `./locks` | `/locks` | 表级写锁 |
 
 相对路径以 Compose 项目目录为基准。数据和锁目录不存在时由 Docker 自动创建，无需手动创建用户或调整目录所有者：

@@ -5,6 +5,8 @@
 /locks/
 /bin/
 *.sqlite*
+feishu-credentials.json
+.feishu-credentials-*
 *.log
 coverage.out
 node_modules/

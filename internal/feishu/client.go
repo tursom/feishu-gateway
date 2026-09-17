@@ -73,12 +73,14 @@ type Params struct {
 // Configure HTTPClient and BaseURL before using the client concurrently.
 // BaseURL includes /open-apis (the default). Redirects are always disabled.
 type Client struct {
-	HTTPClient  *http.Client
-	BaseURL     string
-	mu          sync.Mutex
-	cachedToken string
-	tokenUntil  time.Time
-	appToken    string
+	HTTPClient        *http.Client
+	BaseURL           string
+	mu                sync.Mutex
+	cachedToken       string
+	tokenUntil        time.Time
+	appToken          string
+	credentialLoader  func() (map[string]any, error)
+	credentialVersion uint64
 }
 
 func NewClient() *Client {
@@ -211,10 +213,35 @@ func (c *Client) request(ctx context.Context, method, path, token string, body a
 	}
 	return result, nil
 }
-func credentials() (map[string]any, error) {
+
+// SetCredentialLoader installs a server-managed source and invalidates cached auth.
+func (c *Client) SetCredentialLoader(loader func() (map[string]any, error)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.credentialLoader = loader
+	c.invalidateCredentialsLocked()
+}
+func (c *Client) invalidateCredentialsLocked() {
+	c.cachedToken = ""
+	c.tokenUntil = time.Time{}
+	c.appToken = ""
+	c.credentialVersion++
+}
+func (c *Client) InvalidateCredentials() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.invalidateCredentialsLocked()
+}
+func credentials() (map[string]any, error) { return LoadCredentials("") }
+
+// LoadCredentials retains environment and legacy file compatibility.
+func LoadCredentials(fallbackPath string) (map[string]any, error) {
 	id, secret := os.Getenv("FEISHU_APP_ID"), os.Getenv("FEISHU_APP_SECRET")
 	if id == "" || secret == "" {
-		path := os.Getenv("FEISHU_CREDENTIALS_FILE")
+		path := fallbackPath
+		if path == "" {
+			path = os.Getenv("FEISHU_CREDENTIALS_FILE")
+		}
 		if path == "" {
 			home, err := os.UserHomeDir()
 			if err != nil {
@@ -248,7 +275,11 @@ func (c *Client) token(ctx context.Context) (string, error) {
 	if c.cachedToken != "" && time.Now().Before(c.tokenUntil) {
 		return c.cachedToken, nil
 	}
-	cred, err := credentials()
+	loader := c.credentialLoader
+	if loader == nil {
+		loader = credentials
+	}
+	cred, err := loader()
 	if err != nil {
 		return "", err
 	}
@@ -289,6 +320,7 @@ func (c *Client) api(ctx context.Context, method, path string, body any, mutatio
 func (c *Client) base(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	app := c.appToken
+	version := c.credentialVersion
 	c.mu.Unlock()
 	if app == "" {
 		r, err := c.api(ctx, "GET", "wiki/v2/spaces/get_node?token=VXBrwsp2Zii0tnkiVKPcJOvpnmg", nil, false)
@@ -301,7 +333,9 @@ func (c *Client) base(ctx context.Context) (string, error) {
 			return "", fail(502, "UPSTREAM_ERROR", "Configured wiki node is not a Bitable")
 		}
 		c.mu.Lock()
-		c.appToken = app
+		if c.credentialVersion == version {
+			c.appToken = app
+		}
 		c.mu.Unlock()
 	}
 	return "bitable/v1/apps/" + url.PathEscape(app), nil

@@ -75,6 +75,7 @@ type TokenResult struct {
 }
 type Store struct {
 	DB          *sql.DB
+	Path        string
 	auditWrites atomic.Uint64
 }
 
@@ -108,7 +109,7 @@ func OpenStore(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	store := &Store{DB: db}
+	store := &Store{DB: db, Path: path}
 	if err = store.PurgeAudit(50000); err != nil {
 		db.Close()
 		return nil, err

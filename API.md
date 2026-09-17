@@ -99,7 +99,8 @@ BUG 非状态字段需要 `bugs:edit`，并填写：
 - `POST /admin-api/apps/{id}/rotate`：空对象请求体，生成新 Token，旧值立即失效。
 - `GET /admin-api/resources`：全局表范围。
 - `GET /admin-api/logs?limit=50&offset=0&result=all&q=...`：分页审计，limit最多500；result可选all/success/failure。
-- `GET /admin-api/settings`：服务配置摘要，不含任何密钥。
+- `GET /admin-api/settings`：服务配置摘要；`feishu` 包含 `appId`、`secretConfigured`、`source`（managed/environment/file/unconfigured），不返回 Secret。
+- `POST /admin-api/feishu-credentials`：`{appId,appSecret?}`，保存飞书应用凭据并立即刷新认证缓存；返回 `{data:{appId,secretConfigured,source}}`。首次或更换 App ID 必须提交 Secret；同一 App ID 的 Secret 留空或省略表示保留原值。此接口只允许通过管理入口调用，受 Origin 和 CSRF 校验保护；审计只记录凭据发生修改，不记录值。保存成功不等于飞书连接验证成功，请另行测试连接。
 - `POST /admin-api/connection-test`：空对象，真实只读查询三个表字段。
 - `POST /admin-api/debug`：`{appId,action,table,recordId?,fields?,expectedRevision?,filter?,fieldNames?,limit?,pageToken?,reason?,idempotencyKey?}`。使用指定应用当前权限发起真实业务调用，返回 `{data:{status,body}}`。外层200表示调试动作被接收，实际业务状态看 `data.status`。
 

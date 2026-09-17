@@ -8,7 +8,6 @@ services:
     environment:
       HOST: 0.0.0.0
       DATABASE_PATH: /data/gateway.sqlite
-      FEISHU_CREDENTIALS_FILE: /run/secrets/feishu_credentials
       FEISHU_LOCK_DIR: /locks
     # Loopback only. The trusted proxy/tunnel must be on this host or the private network.
     ports:
@@ -16,8 +15,6 @@ services:
     volumes:
       - ${FEISHU_DATA_DIR:-./data}:/data
       - ${FEISHU_LOCKS_DIR:-./locks}:/locks
-    secrets:
-      - feishu_credentials
     security_opt:
       - no-new-privileges:true
     read_only: true
@@ -25,9 +22,6 @@ services:
       - /tmp:size=16m,mode=1777
     networks:
       - gateway-private
-secrets:
-  feishu_credentials:
-    file: ${FEISHU_SECRET_SOURCE:?Set FEISHU_SECRET_SOURCE to a container-readable credential file}
 networks:
   gateway-private:
     ipam:

@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,20 +22,28 @@ type Feishu interface {
 	Run(context.Context, feishu.Params) (any, error)
 }
 type Server struct {
-	Config      Config
-	Store       *Store
-	Client      Feishu
-	Web         fs.FS
-	csrf        string
-	slots       chan struct{}
-	entryMu     sync.Mutex
-	entryMinute int64
-	entryCount  int
-	entrySlots  chan struct{}
+	Config           Config
+	Store            *Store
+	Client           Feishu
+	Web              fs.FS
+	csrf             string
+	slots            chan struct{}
+	entryMu          sync.Mutex
+	entryMinute      int64
+	entryCount       int
+	credentials      *CredentialManager
+	credentialSaveMu sync.Mutex
+	entrySlots       chan struct{}
 }
 
 func NewServer(c Config, s *Store, f Feishu, web fs.FS) *Server {
-	return &Server{Config: c, Store: s, Client: f, Web: web, csrf: randomID("csrf_"), slots: make(chan struct{}, 16), entrySlots: make(chan struct{}, 64)}
+	credentials := newCredentialManager(s.Path, c.CredentialsFile)
+	if configurable, ok := f.(interface {
+		SetCredentialLoader(func() (map[string]any, error))
+	}); ok {
+		configurable.SetCredentialLoader(credentials.Load)
+	}
+	return &Server{Config: c, Store: s, Client: f, Web: web, credentials: credentials, csrf: randomID("csrf_"), slots: make(chan struct{}, 16), entrySlots: make(chan struct{}, 64)}
 }
 
 type response struct {
@@ -680,10 +687,26 @@ func (s *Server) adminRoute(w http.ResponseWriter, r *http.Request, id, admin st
 			v, e := s.Store.Logs(limit, offset, result, q)
 			return ok(v), e
 		case "settings":
-			_, e := os.Stat(s.Config.CredentialsFile)
-			configured := (os.Getenv("FEISHU_APP_ID") != "" && os.Getenv("FEISHU_APP_SECRET") != "") || e == nil
-			return ok(map[string]any{"authMode": s.Config.Mode, "publicOrigin": s.Config.PublicOrigin, "rateLimitPerMinute": s.Config.RateLimit, "credentialConfigured": configured, "version": "0.1.0"}), nil
+			info := s.credentials.Info()
+			return ok(map[string]any{"authMode": s.Config.Mode, "publicOrigin": s.Config.PublicOrigin, "rateLimitPerMinute": s.Config.RateLimit, "credentialConfigured": info.SecretConfigured, "feishu": info, "version": "0.1.0"}), nil
 		}
+	}
+	if path == "feishu-credentials" && r.Method == "POST" {
+		var input FeishuCredentialInput
+		if e := decode(w, r, &input); e != nil {
+			return response{}, e
+		}
+		s.credentialSaveMu.Lock()
+		defer s.credentialSaveMu.Unlock()
+		info, e := s.credentials.Save(input)
+		if e != nil {
+			return response{}, e
+		}
+		if invalidator, ok := s.Client.(interface{ InvalidateCredentials() }); ok {
+			invalidator.InvalidateCredentials()
+		}
+		s.adminAudit(id, admin, "settings.feishu.save", "", []string{"app_id", "app_secret"})
+		return ok(info), nil
 	}
 	if path == "apps" && r.Method == "POST" {
 		var input AppInput
